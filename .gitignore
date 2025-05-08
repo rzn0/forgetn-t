@@ -1,0 +1,17 @@
+# Python bytecode
+__pycache__/
+*.pyc
+*.pyo
+
+# Environment variables (sensitive data)
+.env
+
+# SQLite Database file (runtime data, not version controlled)
+tasks.db
+tasks.db-journal
+
+# Virtual environment folder (if you use one, common names)
+.venv/
+venv/
+env/
+ENV/
