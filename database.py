@@ -1,11 +1,9 @@
 # database.py
 import sqlite3
 import logging
-import os
-from typing import Optional, Tuple, List, Dict # Ensure Dict is imported
+from typing import Optional, List, Dict
 
 DATABASE_NAME = 'tasks.db'
-
 logger = logging.getLogger('discord')
 
 def get_db_connection():
@@ -34,11 +32,10 @@ def initialize_database():
             )
         ''')
 
-        # Add completed_channel_id if it doesn't exist
+        # Add completed_channel_id if it doesn't exist (for backward compatibility)
         if not _column_exists(cursor, 'guilds', 'completed_channel_id'):
             cursor.execute('ALTER TABLE guilds ADD COLUMN completed_channel_id INTEGER')
             logger.info("Added 'completed_channel_id' column to 'guilds' table.")
-
 
         # Tasks table
         cursor.execute('''
@@ -46,7 +43,7 @@ def initialize_database():
                 task_id INTEGER PRIMARY KEY AUTOINCREMENT,
                 guild_id INTEGER NOT NULL,
                 description TEXT NOT NULL,
-                status TEXT NOT NULL CHECK(status IN ('open', 'in_progress', 'completed')),
+                status TEXT NOT NULL CHECK(status IN ('open', 'in_progress')),
                 creator_id INTEGER NOT NULL,
                 assignee_id INTEGER,
                 open_message_id INTEGER UNIQUE,
@@ -55,7 +52,6 @@ def initialize_database():
                 FOREIGN KEY (guild_id) REFERENCES guilds (guild_id)
             )
         ''')
-        # Add indexes for faster lookups
         cursor.execute('CREATE INDEX IF NOT EXISTS idx_task_guild_status ON tasks (guild_id, status)')
         cursor.execute('CREATE INDEX IF NOT EXISTS idx_task_open_message ON tasks (open_message_id)')
         cursor.execute('CREATE INDEX IF NOT EXISTS idx_task_inprogress_message ON tasks (inprogress_message_id)')
@@ -70,20 +66,6 @@ def initialize_database():
 
 # --- Guild Configuration Functions ---
 
-def get_tasks_by_status(guild_id: int, status: str) -> List[sqlite3.Row]:
-    """Retrieves all tasks for a guild with a specific status."""
-    conn = get_db_connection()
-    cursor = conn.cursor()
-    tasks = []
-    try:
-        cursor.execute("SELECT * FROM tasks WHERE guild_id = ? AND status = ?", (guild_id, status))
-        tasks = cursor.fetchall()
-    except sqlite3.Error as e:
-        logger.error(f"Error getting tasks by status ({status}) for guild {guild_id}: {e}")
-    finally:
-        conn.close()
-    return tasks
-
 def set_channel(guild_id: int, channel_type: str, channel_id: int) -> bool:
     """Sets the open, in-progress, or completed channel ID for a guild."""
     conn = get_db_connection()
@@ -92,8 +74,8 @@ def set_channel(guild_id: int, channel_type: str, channel_id: int) -> bool:
         if channel_type not in ['open', 'inprogress', 'completed']:
             logger.error(f"Invalid channel type: {channel_type}")
             return False
-
         column_name = f"{channel_type}_channel_id"
+        # Create guild row if it doesn't exist, then update channel ID.
         cursor.execute("INSERT OR IGNORE INTO guilds (guild_id) VALUES (?)", (guild_id,))
         cursor.execute(f"UPDATE guilds SET {column_name} = ? WHERE guild_id = ?", (channel_id, guild_id))
         conn.commit()
@@ -119,7 +101,7 @@ def get_channel_ids(guild_id: int) -> Optional[Dict[str, Optional[int]]]:
                 'inprogress': row['inprogress_channel_id'],
                 'completed': row['completed_channel_id']
             }
-        return None
+        return None # Guild not found in DB
     except sqlite3.Error as e:
         logger.error(f"Error getting channel IDs for guild {guild_id}: {e}")
         return None
@@ -128,7 +110,7 @@ def get_channel_ids(guild_id: int) -> Optional[Dict[str, Optional[int]]]:
 
 # --- Task Management Functions ---
 
-def add_task(guild_id: int, description: str, creator_id: int) -> Optional[int]: # THIS IS THE FUNCTION
+def add_task(guild_id: int, description: str, creator_id: int) -> Optional[int]:
     """Adds a new task to the database with 'open' status. Returns the new task ID."""
     conn = get_db_connection()
     cursor = conn.cursor()
@@ -174,30 +156,42 @@ def get_task_by_message_id(message_id: int) -> Optional[sqlite3.Row]:
     finally:
         conn.close()
 
+def get_tasks_by_status(guild_id: int, status: str) -> List[sqlite3.Row]:
+    """Retrieves all tasks for a guild with a specific status."""
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    tasks_list = []
+    try:
+        cursor.execute("SELECT * FROM tasks WHERE guild_id = ? AND status = ?", (guild_id, status))
+        tasks_list = cursor.fetchall()
+    except sqlite3.Error as e:
+        logger.error(f"Error getting tasks by status ({status}) for guild {guild_id}: {e}")
+    finally:
+        conn.close()
+    return tasks_list
 
 def update_task_message_id(task_id: int, message_type: str, message_id: Optional[int]) -> bool:
-    """Updates the message ID for a task."""
+    """Updates the message ID for a task (open or inprogress)."""
     conn = get_db_connection()
     cursor = conn.cursor()
     try:
         if message_type not in ['open', 'inprogress']:
-            logger.error(f"Invalid message type: {message_type}")
+            logger.error(f"Invalid message type for updating message ID: {message_type}")
             return False
         column_name = f"{message_type}_message_id"
         cursor.execute(f"UPDATE tasks SET {column_name} = ? WHERE task_id = ?", (message_id, task_id))
         conn.commit()
         return True
-    except sqlite3.IntegrityError:
-         logger.warning(f"Attempted to set duplicate message ID {message_id} for task {task_id} ({message_type}).")
+    except sqlite3.IntegrityError: # Catch if trying to set a duplicate message_id
+         logger.warning(f"Attempted to set duplicate {message_type}_message_id {message_id} for task {task_id}.")
          conn.rollback()
          return False
     except sqlite3.Error as e:
-        logger.error(f"Error updating {message_type}_message_id for task {task_id}: {e}")
+        logger.error(f"Error updating {column_name} for task {task_id}: {e}")
         conn.rollback()
         return False
     finally:
         conn.close()
-
 
 def claim_task(task_id: int, assignee_id: int) -> bool:
     """Updates task status to 'in_progress' and sets the assignee."""
@@ -214,7 +208,7 @@ def claim_task(task_id: int, assignee_id: int) -> bool:
             logger.info(f"Task {task_id} claimed by user {assignee_id}")
             return True
         else:
-            logger.warning(f"Task {task_id} could not be claimed (already claimed or doesn't exist).")
+            logger.warning(f"Task {task_id} could not be claimed (already claimed, completed, or doesn't exist).")
             return False
     except sqlite3.Error as e:
         logger.error(f"Error claiming task {task_id} for user {assignee_id}: {e}")
@@ -223,8 +217,8 @@ def claim_task(task_id: int, assignee_id: int) -> bool:
     finally:
         conn.close()
 
-def complete_task(task_id: int) -> bool:
-    """Deletes a task from the database. Called after logging to completed channel."""
+def complete_task_in_db(task_id: int) -> bool:
+    """Deletes a task from the database. This is called *after* logging to completed channel."""
     conn = get_db_connection()
     cursor = conn.cursor()
     try:
@@ -255,7 +249,7 @@ def remove_task_by_message_id(message_id: int) -> bool:
         deleted_rows = cursor.rowcount
         conn.commit()
         if deleted_rows > 0:
-            logger.info(f"Task associated with message {message_id} removed.")
+            logger.info(f"Task associated with message {message_id} removed from DB.")
             return True
         return False
     except sqlite3.Error as e:
@@ -273,7 +267,7 @@ def cleanup_guild_data(guild_id: int):
         cursor.execute("DELETE FROM tasks WHERE guild_id = ?", (guild_id,))
         cursor.execute("DELETE FROM guilds WHERE guild_id = ?", (guild_id,))
         conn.commit()
-        logger.info(f"Cleaned up data for guild {guild_id}")
+        logger.info(f"Cleaned up all data for guild {guild_id}")
     except sqlite3.Error as e:
         logger.error(f"Error cleaning up data for guild {guild_id}: {e}")
         conn.rollback()

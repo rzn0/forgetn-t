@@ -1,6 +1,6 @@
-# bot.py
+# bot.py (or taskBot.py)
 import discord
-from discord.ext import commands # For has_permissions
+from discord.ext import commands
 from discord.commands import Option, SlashCommandGroup
 import os
 import logging
@@ -9,13 +9,12 @@ from dotenv import load_dotenv
 import database as db
 from views import (
     OpenTaskView, InProgressTaskView,
-    create_task_embed, create_completed_task_embed # Ensure all needed functions/classes are imported
+    create_task_embed, create_completed_task_embed
 )
 
 # --- Logging Setup ---
 logging.basicConfig(level=logging.INFO, format='%(asctime)s:%(levelname)s:%(name)s: %(message)s')
-logger = logging.getLogger('discord') # Main logger for discord.py related logs
-# logging.getLogger('database').setLevel(logging.DEBUG) # Example for more verbose DB logs
+logger = logging.getLogger('discord')
 
 # --- Environment Variables ---
 load_dotenv()
@@ -26,37 +25,34 @@ if not BOT_TOKEN:
 
 # --- Bot Intents ---
 intents = discord.Intents.default()
-intents.guilds = True        # For guild events and info
-intents.messages = True      # For on_message_delete or future message-based commands (if any)
-intents.members = True       # For resolving user mentions and guild member info
+intents.guilds = True
+intents.messages = True # For potential on_message_delete or future features
+intents.members = True  # For resolving user mentions
 
-bot = discord.Bot(intents=intents, command_prefix="!") # Prefix is fallback, not used for slash
+bot = discord.Bot(intents=intents)
 
 # --- Event Handlers ---
 
 @bot.event
 async def on_ready():
+    """Called when the bot is ready and connected to Discord."""
     logger.info(f'Logged in as {bot.user.name} (ID: {bot.user.id})')
     logger.info('Initializing database...')
-    db.initialize_database() # This will also handle ALTER TABLE if needed
+    db.initialize_database()
     logger.info("Bot is ready and database initialized.")
 
-    # Register persistent views (important for buttons to work after bot restart)
-    # The task_id=-1 is a placeholder; actual task_id is set when view is sent.
-    # The custom_id format (e.g., "claim_task_{task_id}") links buttons to tasks.
-    bot.add_view(OpenTaskView(task_id=-1))
+    # Register persistent views
+    bot.add_view(OpenTaskView(task_id=-1)) # task_id is a placeholder
     bot.add_view(InProgressTaskView(task_id=-1))
     logger.info("Persistent views registered.")
-    print("------")
     print(f"{bot.user.name} is online!")
-    print("------")
-
 
 @bot.event
 async def on_guild_join(guild: discord.Guild):
+    """Called when the bot joins a new server."""
     logger.info(f"Joined new guild: {guild.name} (ID: {guild.id})")
     channel_to_send = guild.system_channel
-    if not channel_to_send: # Fallback if no system channel
+    if not channel_to_send:
          for channel in guild.text_channels:
               if channel.permissions_for(guild.me).send_messages:
                   channel_to_send = channel
@@ -68,231 +64,157 @@ async def on_guild_join(guild: discord.Guild):
                 f"➡️ Use `/setup open_channel` for new tasks.\n"
                 f"➡️ Use `/setup inprogress_channel` for claimed tasks.\n"
                 f"➡️ Use `/setup completed_channel` (optional) for logging completed tasks.\n"
-                f"➡️ If you have tasks from an older version of me, use `/resync_tasks` once after setup."
+                f"➡️ If you have tasks from an older version, use `/resync_tasks` once after setup."
             )
-            logger.info(f"Sent welcome message to {channel_to_send.name} in {guild.name}")
-        except discord.Forbidden:
-             logger.warning(f"Could not send welcome message in {guild.name} due to permissions.")
         except Exception as e:
             logger.error(f"Error sending welcome message in {guild.name}: {e}")
-
-# Optional: Clean up DB if a task message is manually deleted
-# @bot.event
-# async def on_message_delete(message: discord.Message):
-#     if message.author == bot.user and message.embeds: # Likely one of our task messages
-#         removed_from_db = db.remove_task_by_message_id(message.id)
-#         if removed_from_db:
-#             logger.info(f"Task associated with manually deleted message {message.id} removed from DB.")
 
 # --- Slash Commands ---
 
 setup_group = SlashCommandGroup("setup", "Commands for setting up the task channels.")
 
-@setup_group.command(name="open_channel", description="Set the channel where new tasks will appear.")
+@setup_group.command(name="open_channel", description="Set the channel for open tasks.")
 @commands.has_permissions(manage_channels=True)
-async def set_open_channel_cmd(ctx: discord.ApplicationContext, channel: Option(discord.TextChannel, "The channel for open tasks", required=True)):
-    guild_id = ctx.guild.id
-    if db.set_channel(guild_id, 'open', channel.id):
+async def set_open_channel_cmd(ctx: discord.ApplicationContext, channel: Option(discord.TextChannel, "Channel for open tasks", required=True)):
+    if db.set_channel(ctx.guild.id, 'open', channel.id):
         await ctx.respond(f"✅ Open tasks channel set to {channel.mention}.", ephemeral=True)
     else:
         await ctx.respond("❌ Error setting open tasks channel.", ephemeral=True)
 
-@setup_group.command(name="inprogress_channel", description="Set the channel where claimed tasks will appear.")
+@setup_group.command(name="inprogress_channel", description="Set the channel for in-progress tasks.")
 @commands.has_permissions(manage_channels=True)
-async def set_inprogress_channel_cmd(ctx: discord.ApplicationContext, channel: Option(discord.TextChannel, "The channel for in-progress tasks", required=True)):
-    guild_id = ctx.guild.id
-    if db.set_channel(guild_id, 'inprogress', channel.id):
+async def set_inprogress_channel_cmd(ctx: discord.ApplicationContext, channel: Option(discord.TextChannel, "Channel for in-progress tasks", required=True)):
+    if db.set_channel(ctx.guild.id, 'inprogress', channel.id):
         await ctx.respond(f"✅ In-progress tasks channel set to {channel.mention}.", ephemeral=True)
     else:
         await ctx.respond("❌ Error setting in-progress tasks channel.", ephemeral=True)
 
-@setup_group.command(name="completed_channel", description="Set the channel where completed tasks will be logged (optional).")
+@setup_group.command(name="completed_channel", description="Set the channel for completed task logs (optional).")
 @commands.has_permissions(manage_channels=True)
-async def set_completed_channel_cmd(ctx: discord.ApplicationContext, channel: Option(discord.TextChannel, "The channel for completed task logs", required=True)):
-    guild_id = ctx.guild.id
-    if db.set_channel(guild_id, 'completed', channel.id):
-        await ctx.respond(f"✅ Completed tasks will now be logged in {channel.mention}.", ephemeral=True)
+async def set_completed_channel_cmd(ctx: discord.ApplicationContext, channel: Option(discord.TextChannel, "Channel for completed logs", required=True)):
+    if db.set_channel(ctx.guild.id, 'completed', channel.id):
+        await ctx.respond(f"✅ Completed tasks will be logged in {channel.mention}.", ephemeral=True)
     else:
-        await ctx.respond("❌ An error occurred while setting the completed tasks channel.", ephemeral=True)
+        await ctx.respond("❌ Error setting completed tasks channel.", ephemeral=True)
 
 bot.add_application_command(setup_group)
 
-
-@bot.slash_command(name="addtask", description="Add a new task to the open tasks list.")
+@bot.slash_command(name="addtask", description="Add a new task.")
 async def add_task_cmd(ctx: discord.ApplicationContext, description: Option(str, "Describe the task", required=True)):
-    guild_id = ctx.guild.id
-    creator_id = ctx.author.id
-
-    channel_ids = db.get_channel_ids(guild_id)
+    """Adds a new task to the open tasks list."""
+    channel_ids = db.get_channel_ids(ctx.guild.id)
     if not channel_ids or not channel_ids.get('open') or not channel_ids.get('inprogress'):
-        await ctx.respond("❌ Open and In-Progress task channels must be set up first. Use `/setup open_channel` and `/setup inprogress_channel`.", ephemeral=True)
+        await ctx.respond("❌ Open and In-Progress channels must be set up first.", ephemeral=True)
         return
 
-    task_id = db.add_task(guild_id, description, creator_id)
+    task_id = db.add_task(ctx.guild.id, description, ctx.author.id)
     if not task_id:
         await ctx.respond("❌ Error saving task to database.", ephemeral=True)
         return
 
-    open_channel_id = channel_ids.get('open') # Should exist due to check above
-    open_channel = bot.get_channel(open_channel_id)
-
+    open_channel = bot.get_channel(channel_ids['open'])
     if not open_channel or not isinstance(open_channel, discord.TextChannel):
-        await ctx.respond(f"❌ Configured open tasks channel (ID: {open_channel_id}) not found or invalid. Task created in DB (ID: {task_id}) but not posted.", ephemeral=True)
-        logger.error(f"Open channel {open_channel_id} not found/invalid for guild {guild_id} when adding task {task_id}")
-        # Consider auto-deleting task from DB if channel is bad: db.complete_task_in_db(task_id) - but this function expects 'in_progress' status
+        await ctx.respond(f"❌ Configured open tasks channel not found/invalid. Task DB ID: {task_id}", ephemeral=True)
         return
 
     task_data = db.get_task_by_id(task_id)
-    if not task_data: # Should not happen if add_task succeeded
-        await ctx.respond("❌ Task added to DB, but couldn't retrieve its data immediately. Cannot post message.", ephemeral=True)
-        logger.error(f"Failed to retrieve task {task_id} immediately after adding for guild {guild_id}")
+    if not task_data:
+        await ctx.respond("❌ Task added to DB, but couldn't retrieve its data.", ephemeral=True)
         return
 
     embed = create_task_embed(task_data, 'open', bot.user)
     view = OpenTaskView(task_id=task_id)
-
     new_task_message = None
     try:
         new_task_message = await open_channel.send(embed=embed, view=view)
-        logger.info(f"Posted new task {task_id} to channel {open_channel.id} in guild {guild_id}")
-
         if not db.update_task_message_id(task_id, 'open', new_task_message.id):
-             logger.error(f"Failed to update open_message_id for task {task_id} after sending message {new_task_message.id}")
-             if new_task_message: await new_task_message.delete() # Clean up message if DB link fails
-             await ctx.respond("❌ An error occurred updating the task's message link. Task message removed. Please try again.", ephemeral=True)
-             # db.remove_task_by_id(task_id) or similar to remove the DB entry
+             if new_task_message: await new_task_message.delete()
+             await ctx.respond("❌ Error linking task message. Task removed. Try again.", ephemeral=True)
+             # db.remove_task_by_id(task_id) could be an option if defined
              return
-
         await ctx.respond(f"✅ Task **#{task_id}** added to {open_channel.mention}!", ephemeral=True)
-
-    except discord.Forbidden:
-        await ctx.respond(f"❌ I don't have permission to send messages in the open tasks channel ({open_channel.mention}). Task not created.", ephemeral=True)
-        if task_id: db.remove_task_by_message_id(new_task_message.id if new_task_message else 0) # Clean up DB if task was added but message failed
-        logger.warning(f"Permission error sending to open channel {open_channel_id}. Task {task_id} (if created) removed from DB.")
-    except discord.HTTPException as e:
-        await ctx.respond(f"❌ An error occurred while sending the task message: {e}. Task not created.", ephemeral=True)
-        if task_id: db.remove_task_by_message_id(new_task_message.id if new_task_message else 0)
-        logger.error(f"HTTP error sending task {task_id} to open channel {open_channel_id}: {e}. Task (if created) removed from DB.")
     except Exception as e:
-        await ctx.respond(f"❌ An unexpected error occurred: {e}. Task not created.", ephemeral=True)
-        if task_id: db.remove_task_by_message_id(new_task_message.id if new_task_message else 0)
-        logger.exception(f"Unexpected error adding task {task_id} for guild {guild_id}: {e}")
-
+        await ctx.respond(f"❌ Error sending task message: {e}. Task not created.", ephemeral=True)
+        if task_id and new_task_message: db.remove_task_by_message_id(new_task_message.id)
+        elif task_id: logger.warning(f"Task {task_id} created in DB but message send failed without message ID.")
 
 @bot.slash_command(name="resync_tasks", description="Reposts existing tasks to ensure buttons work (Admin Only).")
 @commands.has_permissions(manage_guild=True)
 async def resync_tasks_cmd(ctx: discord.ApplicationContext):
+    """Refreshes tasks by re-posting them and updating message IDs."""
     await ctx.defer(ephemeral=True)
-
     guild_id = ctx.guild.id
     channel_ids = db.get_channel_ids(guild_id)
 
     if not channel_ids or not channel_ids.get('open') or not channel_ids.get('inprogress'):
-        await ctx.followup.send("❌ Open and In-Progress task channels must be set up first. Cannot resync.", ephemeral=True)
+        await ctx.followup.send("❌ Open and In-Progress channels must be set up first.", ephemeral=True)
         return
 
     open_channel = bot.get_channel(channel_ids['open']) if channel_ids.get('open') else None
     inprogress_channel = bot.get_channel(channel_ids['inprogress']) if channel_ids.get('inprogress') else None
 
     if not open_channel or not isinstance(open_channel, discord.TextChannel):
-        await ctx.followup.send(f"❌ Configured open tasks channel not found or invalid. Cannot resync open tasks.", ephemeral=True)
+        await ctx.followup.send("❌ Open tasks channel not found/invalid.", ephemeral=True)
         return
     if not inprogress_channel or not isinstance(inprogress_channel, discord.TextChannel):
-        await ctx.followup.send(f"❌ Configured in-progress tasks channel not found or invalid. Cannot resync in-progress tasks.", ephemeral=True)
+        await ctx.followup.send("❌ In-progress tasks channel not found/invalid.", ephemeral=True)
         return
 
-    resynced_open_count = 0
-    resynced_inprogress_count = 0
-    errors = []
+    resynced_open, resynced_inprogress, errors = 0, 0, []
 
-    # Resync OPEN tasks
-    logger.info(f"Starting resync for 'open' tasks in guild {guild_id}")
-    open_tasks_to_resync = db.get_tasks_by_status(guild_id, 'open')
-    for task_data in open_tasks_to_resync:
-        task_id = task_data['task_id']
-        # Attempt to delete old message if its ID is stored
-        if task_data['open_message_id']:
+    for status, target_channel, TaskViewClass in [('open', open_channel, OpenTaskView), ('in_progress', inprogress_channel, InProgressTaskView)]:
+        logger.info(f"Resyncing '{status}' tasks in guild {guild_id}")
+        tasks_to_resync = db.get_tasks_by_status(guild_id, status)
+        for task_data in tasks_to_resync:
+            task_id = task_data['task_id']
+            old_msg_id_col = f"{status}_message_id"
+            if task_data[old_msg_id_col]:
+                try:
+                    old_msg = await target_channel.fetch_message(task_data[old_msg_id_col])
+                    await old_msg.delete()
+                except (discord.NotFound, discord.Forbidden): pass # Ignore if old message is gone/unreachable
+
             try:
-                old_msg = await open_channel.fetch_message(task_data['open_message_id'])
-                await old_msg.delete()
-                logger.info(f"Resync: Deleted old open message {task_data['open_message_id']} for task {task_id}")
-            except (discord.NotFound, discord.Forbidden):
-                logger.warning(f"Resync: Old open message {task_data['open_message_id']} for task {task_id} not found or no permission to delete.")
+                embed = create_task_embed(task_data, status, bot.user)
+                view = TaskViewClass(task_id=task_id)
+                new_message = await target_channel.send(embed=embed, view=view)
+                if db.update_task_message_id(task_id, status, new_message.id):
+                    # Clear the other status message ID if it exists to prevent confusion
+                    other_status = 'inprogress' if status == 'open' else 'open'
+                    db.update_task_message_id(task_id, other_status, None)
+                    if status == 'open': resynced_open += 1
+                    else: resynced_inprogress += 1
+                else:
+                    errors.append(f"DB update fail for {status} task {task_id}")
+                    await new_message.delete()
+            except Exception as e:
+                errors.append(f"Error resyncing {status} task {task_id}: {str(e)[:100]}")
 
-        try:
-            embed = create_task_embed(task_data, 'open', bot.user)
-            view = OpenTaskView(task_id=task_id)
-            new_message = await open_channel.send(embed=embed, view=view)
-            if db.update_task_message_id(task_id, 'open', new_message.id):
-                db.update_task_message_id(task_id, 'inprogress', None) # Ensure inprogress message ID is cleared
-                resynced_open_count += 1
-            else:
-                errors.append(f"DB update failed for open task {task_id}")
-                await new_message.delete() # Clean up
-        except Exception as e:
-            errors.append(f"Error resyncing open task {task_id}: {str(e)[:100]}")
-            logger.exception(f"Resync error for open task {task_id}")
-
-    # Resync IN-PROGRESS tasks
-    logger.info(f"Starting resync for 'in_progress' tasks in guild {guild_id}")
-    inprogress_tasks_to_resync = db.get_tasks_by_status(guild_id, 'in_progress')
-    for task_data in inprogress_tasks_to_resync:
-        task_id = task_data['task_id']
-        if task_data['inprogress_message_id']:
-            try:
-                old_msg = await inprogress_channel.fetch_message(task_data['inprogress_message_id'])
-                await old_msg.delete()
-                logger.info(f"Resync: Deleted old in-progress message {task_data['inprogress_message_id']} for task {task_id}")
-            except (discord.NotFound, discord.Forbidden):
-                 logger.warning(f"Resync: Old in-progress message {task_data['inprogress_message_id']} for task {task_id} not found or no permission to delete.")
-
-        try:
-            embed = create_task_embed(task_data, 'in_progress', bot.user)
-            view = InProgressTaskView(task_id=task_id)
-            new_message = await inprogress_channel.send(embed=embed, view=view)
-            if db.update_task_message_id(task_id, 'inprogress', new_message.id):
-                db.update_task_message_id(task_id, 'open', None) # Ensure open message ID is cleared
-                resynced_inprogress_count += 1
-            else:
-                errors.append(f"DB update failed for in-progress task {task_id}")
-                await new_message.delete()
-        except Exception as e:
-            errors.append(f"Error resyncing in-progress task {task_id}: {str(e)[:100]}")
-            logger.exception(f"Resync error for in-progress task {task_id}")
-
-    summary = f"✅ Resync Complete!\n" \
-              f"📬 Open Tasks Resynced: {resynced_open_count}\n" \
-              f"⏳ In-Progress Tasks Resynced: {resynced_inprogress_count}\n"
-    if errors:
-        summary += "\n⚠️ Errors Encountered (see bot logs for full details):\n" + "\n".join([f"- {e}" for e in errors[:5]])
-    summary += "\n\nℹ️ *If any old task messages still appear, you may need to delete them manually.*"
+    summary = f"✅ Resync Complete!\n📬 Open: {resynced_open}\n⏳ In-Progress: {resynced_inprogress}\n"
+    if errors: summary += "⚠️ Errors (see logs):\n" + "\n".join([f"- {e}" for e in errors[:5]])
+    summary += "\nℹ️ *Old messages (if any) were attempted to be deleted. Manual cleanup may be needed.*"
     await ctx.followup.send(summary, ephemeral=True)
-
 
 # --- Error Handling for Commands ---
 @bot.event
 async def on_application_command_error(ctx: discord.ApplicationContext, error: discord.DiscordException):
-    """Handles errors for slash commands."""
-    original_error = getattr(error, 'original', error) # Get original error if wrapped
-
+    """Global error handler for slash commands."""
+    original_error = getattr(error, 'original', error)
     if isinstance(original_error, commands.MissingPermissions):
-        await ctx.respond("❌ You don't have the required permissions to run this command.", ephemeral=True)
+        msg = "❌ You lack permissions for this command."
     elif isinstance(original_error, commands.BotMissingPermissions):
-        await ctx.respond(f"❌ I lack the necessary permissions: `{'`, `'.join(original_error.missing_perms)}`", ephemeral=True)
+        msg = f"❌ I lack permissions: `{'`, `'.join(original_error.missing_perms)}`"
     else:
-        logger.error(f"Unhandled application command error in guild {ctx.guild_id} for command {ctx.command.qualified_name}:", exc_info=original_error)
-        try:
-            if ctx.interaction.response.is_done():
-                await ctx.followup.send("❌ An unexpected error occurred while processing your command. Please check the bot logs.", ephemeral=True)
-            else:
-                await ctx.respond("❌ An unexpected error occurred while processing your command. Please check the bot logs.", ephemeral=True)
-        except discord.HTTPException: # If responding itself fails
-            logger.error("Failed to send error message to user after command error.")
+        logger.error(f"Unhandled error for cmd '{ctx.command.qualified_name}':", exc_info=original_error)
+        msg = "❌ An unexpected error occurred. Check bot logs."
 
+    try:
+        if ctx.interaction.response.is_done(): await ctx.followup.send(msg, ephemeral=True)
+        else: await ctx.respond(msg, ephemeral=True)
+    except discord.HTTPException:
+        logger.error("Failed to send error message to user after command error.")
 
 # --- Run the Bot ---
 if __name__ == "__main__":
-    if not BOT_TOKEN:
-        print("CRITICAL: DISCORD_TOKEN is not set. Exiting.")
-    else:
-        bot.run(BOT_TOKEN)
+    if not BOT_TOKEN: print("CRITICAL: DISCORD_TOKEN is not set.")
+    else: bot.run(BOT_TOKEN)
